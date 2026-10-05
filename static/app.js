@@ -5,6 +5,7 @@ const table = $('#data-table'), emptyState = $('#empty-state'), selectionLabel =
 const imageInput = $('#image-input'), importInput = $('#import-input'), toolsPanel = $('#tools-panel');
 let rows = [], dirty = false, active = { row: 0, column: 0 };
 let history = [], future = [], searchMatches = [], searchIndex = -1;
+let currentSort = { column: null, direction: null }, preSortSnapshot = null;
 
 function setStatus(message, state = '') { statusNode.textContent = message; statusNode.className = `status ${state}`; }
 function rectangular(data) {
@@ -13,6 +14,11 @@ function rectangular(data) {
 }
 function clone(data) { return data.map((row) => [...row]); }
 let activeColumnFilters = {};
+function resetFiltersAndSort() {
+  activeColumnFilters = {};
+  currentSort = { column: null, direction: null };
+  preSortSnapshot = null;
+}
 
 function parseNumericValue(text) {
   if (text == null) return null;
@@ -46,6 +52,89 @@ function parseNumericValue(text) {
 
   const num = parseFloat(cleaned);
   return isNaN(num) ? null : num;
+}
+
+function parseDateValue(text) {
+  if (text == null) return null;
+  const str = String(text).trim();
+  const isoMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (isoMatch) {
+    const d = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  const euMatch = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (euMatch) {
+    const d = new Date(Number(euMatch[3]), Number(euMatch[2]) - 1, Number(euMatch[1]));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  return null;
+}
+
+function compareValues(a, b, isAsc) {
+  const strA = String(a ?? '').trim();
+  const strB = String(b ?? '').trim();
+
+  if (!strA && !strB) return 0;
+  if (!strA) return 1;
+  if (!strB) return -1;
+
+  const numA = parseNumericValue(strA);
+  const numB = parseNumericValue(strB);
+  if (numA !== null && numB !== null) {
+    return isAsc ? numA - numB : numB - numA;
+  }
+
+  const dateA = parseDateValue(strA);
+  const dateB = parseDateValue(strB);
+  if (dateA !== null && dateB !== null) {
+    return isAsc ? dateA - dateB : dateB - dateA;
+  }
+
+  const cmp = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+  return isAsc ? cmp : -cmp;
+}
+
+function toggleSort(column) {
+  if (currentSort.column === column) {
+    if (currentSort.direction === 'asc') {
+      applySort(column, 'desc');
+    } else if (currentSort.direction === 'desc') {
+      if (preSortSnapshot) {
+        currentSort = { column: null, direction: null };
+        renderTable(preSortSnapshot, false);
+        preSortSnapshot = null;
+        markDirty();
+        setStatus('Sortarea a fost anulată (ordinea inițială restaurată).', 'success');
+      } else {
+        applySort(column, 'asc');
+      }
+    }
+  } else {
+    preSortSnapshot = clone(collectRows());
+    applySort(column, 'asc');
+  }
+}
+
+function applySort(column, direction) {
+  const allRows = collectRows();
+  if (allRows.length <= 2) {
+    setStatus('Nu există suficiente rânduri de date pentru sortare.', 'error');
+    return;
+  }
+
+  const headerRow = allRows[0];
+  const dataRows = allRows.slice(1);
+  const isAsc = direction === 'asc';
+
+  dataRows.sort((rowA, rowB) => compareValues(rowA[column], rowB[column], isAsc));
+
+  currentSort = { column, direction };
+  const sortedRows = [headerRow, ...dataRows];
+  renderTable(sortedRows, false);
+  markDirty();
+
+  const colName = headerRow[column]?.trim() || `Coloana ${column + 1}`;
+  setStatus(`Coloana „${colName}” sortată ${isAsc ? 'crescător (A→Z / 0→9)' : 'descrescător (Z→A / 9→0)'}.`, 'success');
 }
 
 function detectColumnUnit(headerText, dataRows, colIndex) {
@@ -203,7 +292,32 @@ function buildFilterSidebar() {
       resetBtn.type = 'button';
       resetBtn.className = 'filter-quick-btn';
       resetBtn.textContent = 'Toate';
+
+      const sortAscBtn = document.createElement('button');
+      sortAscBtn.type = 'button';
+      sortAscBtn.className = 'filter-quick-btn';
+      sortAscBtn.textContent = '↑ 0→9';
+      sortAscBtn.title = 'Sortează crescător (0→9)';
+      sortAscBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!preSortSnapshot || currentSort.column !== colIndex) preSortSnapshot = clone(collectRows());
+        applySort(colIndex, 'asc');
+      });
+
+      const sortDescBtn = document.createElement('button');
+      sortDescBtn.type = 'button';
+      sortDescBtn.className = 'filter-quick-btn';
+      sortDescBtn.textContent = '↓ 9→0';
+      sortDescBtn.title = 'Sortează descrescător (9→0)';
+      sortDescBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!preSortSnapshot || currentSort.column !== colIndex) preSortSnapshot = clone(collectRows());
+        applySort(colIndex, 'desc');
+      });
+
       actions.appendChild(resetBtn);
+      actions.appendChild(sortAscBtn);
+      actions.appendChild(sortDescBtn);
       groupBody.appendChild(actions);
 
       const rangeContainer = document.createElement('div');
@@ -395,8 +509,32 @@ function buildFilterSidebar() {
       deselectAllBtn.className = 'filter-quick-btn';
       deselectAllBtn.textContent = 'Niciuna';
 
+      const sortAscBtn = document.createElement('button');
+      sortAscBtn.type = 'button';
+      sortAscBtn.className = 'filter-quick-btn';
+      sortAscBtn.textContent = '↑ A→Z';
+      sortAscBtn.title = 'Sortează de la A la Z';
+      sortAscBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!preSortSnapshot || currentSort.column !== colIndex) preSortSnapshot = clone(collectRows());
+        applySort(colIndex, 'asc');
+      });
+
+      const sortDescBtn = document.createElement('button');
+      sortDescBtn.type = 'button';
+      sortDescBtn.className = 'filter-quick-btn';
+      sortDescBtn.textContent = '↓ Z→A';
+      sortDescBtn.title = 'Sortează de la Z la A';
+      sortDescBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!preSortSnapshot || currentSort.column !== colIndex) preSortSnapshot = clone(collectRows());
+        applySort(colIndex, 'desc');
+      });
+
       actions.appendChild(selectAllBtn);
       actions.appendChild(deselectAllBtn);
+      actions.appendChild(sortAscBtn);
+      actions.appendChild(sortDescBtn);
       groupBody.appendChild(actions);
 
       const valuesList = document.createElement('div');
@@ -790,8 +928,13 @@ function cellName(row, column) { let name = ''; let n = column + 1; while (n) { 
 function setActive(row, column) {
   active = { row, column };
   document.querySelectorAll('.selected-cell').forEach((cell) => cell.classList.remove('selected-cell'));
+  document.querySelectorAll('.selected-header').forEach((th) => th.classList.remove('selected-header'));
   const cell = table.querySelector(`[data-row="${row}"][data-column="${column}"]`);
-  if (cell) cell.classList.add('selected-cell');
+  if (cell) {
+    cell.classList.add('selected-cell');
+    const th = cell.closest('th');
+    if (th) th.classList.add('selected-header');
+  }
   const isImage = cell?.dataset?.formula;
   selectionLabel.textContent = `Selectat: ${cellName(row, column)}${isImage ? ' (Imagine)' : ''}`;
 }
@@ -877,10 +1020,74 @@ function editableCell(value, row, column, tag = 'td') {
   return cell;
 }
 
+function headerCell(value, column) {
+  const th = document.createElement('th');
+  th.className = 'header-cell';
+  th.dataset.column = column;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'header-content';
+
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'data-cell header-text';
+  titleSpan.contentEditable = 'true';
+  titleSpan.spellcheck = false;
+  titleSpan.dataset.row = '0';
+  titleSpan.dataset.column = column;
+  titleSpan.textContent = value;
+
+  titleSpan.addEventListener('focus', () => setActive(0, column));
+  titleSpan.addEventListener('click', () => setActive(0, column));
+  titleSpan.addEventListener('input', markDirty);
+  titleSpan.addEventListener('blur', () => {
+    if (!titleSpan.textContent.trim()) {
+      titleSpan.textContent = `Coloana ${column + 1}`;
+      markDirty();
+    }
+  });
+  titleSpan.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      titleSpan.blur();
+      const next = table.querySelector(`[data-row="1"][data-column="${column}"]`);
+      if (next) next.focus();
+    }
+  });
+
+  const sortBtn = document.createElement('button');
+  sortBtn.type = 'button';
+  sortBtn.className = 'col-sort-btn';
+  sortBtn.contentEditable = 'false';
+
+  const isCurrent = currentSort.column === column;
+  if (isCurrent && currentSort.direction === 'asc') {
+    sortBtn.classList.add('active', 'asc');
+    sortBtn.textContent = '▲';
+    sortBtn.title = `Coloana ${column + 1} este sortată crescător (A→Z / 0→9). Click pentru descrescător.`;
+  } else if (isCurrent && currentSort.direction === 'desc') {
+    sortBtn.classList.add('active', 'desc');
+    sortBtn.textContent = '▼';
+    sortBtn.title = `Coloana ${column + 1} este sortată descrescător (Z→A / 9→0). Click pentru resetare ordine.`;
+  } else {
+    sortBtn.textContent = '⇅';
+    sortBtn.title = `Sortează coloana ${column + 1} (A→Z / 0→9)`;
+  }
+
+  sortBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSort(column);
+  });
+
+  wrapper.appendChild(titleSpan);
+  wrapper.appendChild(sortBtn);
+  th.appendChild(wrapper);
+  return th;
+}
+
 function renderTable(data, resetHistory = true) {
   rows = rectangular(data.length ? data : [['Coloana 1']]); table.innerHTML = '';
   const header = table.createTHead().insertRow(); const corner = document.createElement('th'); corner.className = 'corner'; corner.textContent = '#'; header.appendChild(corner);
-  rows[0].forEach((value, column) => header.appendChild(editableCell(value || `Coloana ${column + 1}`, 0, column, 'th')));
+  rows[0].forEach((value, column) => header.appendChild(headerCell(value || `Coloana ${column + 1}`, column)));
   const body = table.createTBody();
   rows.slice(1).forEach((row, rowIndex) => { const tr = body.insertRow(); const number = document.createElement('th'); number.className = 'row-number'; number.textContent = rowIndex + 1; tr.appendChild(number); row.forEach((value, column) => tr.appendChild(editableCell(value, rowIndex + 1, column))); });
   emptyState.hidden = data.length > 0; setActive(Math.min(active.row, rows.length - 1), Math.min(active.column, rows[0].length - 1));
@@ -916,7 +1123,7 @@ async function loadDocument() {
   loadButton.disabled = true; setStatus('Se deschide documentul…');
   try {
     const result = await requestJson('/api/load', { method: 'POST', body: JSON.stringify({ url: urlInput.value.trim() }) });
-    activeColumnFilters = {};
+    resetFiltersAndSort();
     renderTable(result.data);
     renderSheetOptions(result.sheets, result.title);
     sheetSelect.dataset.current = result.title;
@@ -942,7 +1149,7 @@ async function resetDocument() {
   try {
     setStatus('Se reîncarcă datele din Google Sheets…');
     const result = await requestJson('/api/data');
-    activeColumnFilters = {};
+    resetFiltersAndSort();
     renderTable(result.data); dirty = false; updateUI();
     setStatus('Datele au fost reîncărcate din Google Sheets.', 'success');
   } catch (error) { setStatus(error.message, 'error'); }
@@ -952,7 +1159,7 @@ async function selectSheet() {
   if (!requireSavedForRemoteOperation()) { sheetSelect.value = sheetSelect.dataset.current; return; }
   try {
     const result = await requestJson('/api/sheet', { method: 'POST', body: JSON.stringify({ title: requestedTitle }) });
-    activeColumnFilters = {};
+    resetFiltersAndSort();
     renderTable(result.data);
     sheetSelect.dataset.current = result.title;
     dirty = false;
@@ -964,7 +1171,7 @@ async function createSheet() {
   if (!requireSavedForRemoteOperation()) return;
   try {
     const result = await requestJson('/api/sheet/create', { method: 'POST', body: JSON.stringify({ title: title.trim() }) });
-    activeColumnFilters = {};
+    resetFiltersAndSort();
     renderSheetOptions(result.sheets, result.title);
     sheetSelect.dataset.current = result.title;
     renderTable(result.data);
@@ -984,7 +1191,7 @@ async function deleteSheet() {
   if (!requireSavedForRemoteOperation()) return;
   try {
     const result = await requestJson('/api/sheet/delete', { method: 'POST' });
-    activeColumnFilters = {};
+    resetFiltersAndSort();
     renderSheetOptions(result.sheets, result.title);
     sheetSelect.dataset.current = result.title;
     renderTable(result.data);
@@ -994,8 +1201,8 @@ async function deleteSheet() {
 }
 function addRow() { rows = collectRows(); rows.push(Array(rows[0].length).fill('')); renderTable(rows, false); setActive(rows.length - 1, 0); markDirty(); table.querySelector(`[data-row="${rows.length - 1}"][data-column="0"]`)?.focus(); }
 function deleteRow() { rows = collectRows(); if (rows.length <= 1) return setStatus('Păstrează cel puțin antetul.', 'error'); rows.splice(Math.max(1, active.row), 1); renderTable(rows, false); markDirty(); }
-function addColumn() { rows = collectRows(); rows.forEach((row, index) => row.push(index ? '' : `Coloana ${row.length + 1}`)); renderTable(rows, false); setActive(active.row, rows[0].length - 1); markDirty(); }
-function deleteColumn() { rows = collectRows(); if (rows[0].length <= 1) return setStatus('Păstrează cel puțin o coloană.', 'error'); activeColumnFilters = {}; rows.forEach((row) => row.splice(active.column, 1)); renderTable(rows, false); markDirty(); }
+function addColumn() { resetFiltersAndSort(); rows = collectRows(); rows.forEach((row, index) => row.push(index ? '' : `Coloana ${row.length + 1}`)); renderTable(rows, false); setActive(active.row, rows[0].length - 1); markDirty(); }
+function deleteColumn() { rows = collectRows(); if (rows[0].length <= 1) return setStatus('Păstrează cel puțin o coloană.', 'error'); resetFiltersAndSort(); rows.forEach((row) => row.splice(active.column, 1)); renderTable(rows, false); markDirty(); }
 function undo() { if (history.length < 2) return; future.push(history.pop()); renderTable(history.at(-1), false); dirty = true; updateUI(); setStatus('Ultima modificare a fost anulată.', 'success'); }
 function redo() { if (!future.length) return; const next = future.pop(); history.push(clone(next)); renderTable(next, false); dirty = true; updateUI(); setStatus('Modificarea a fost refăcută.', 'success'); }
 function showTool(name) { toolsPanel.hidden = false; $('#table-tool').hidden = name !== 'table'; $('#diagram-tool').hidden = name !== 'diagram'; }
@@ -1005,11 +1212,89 @@ async function insertDiagram() { const nodes = $('#diagram-input').value.trim().
 function uploadImage(file) { if (file.size > 8 * 1024 * 1024) return setStatus('Imaginea poate avea cel mult 8 MB.', 'error'); if (!requireSavedForRemoteOperation()) return; const reader = new FileReader(); reader.onload = async () => { try { const result = await requestJson('/api/image', { method: 'POST', body: JSON.stringify({ dataUrl: reader.result, row: active.row, column: active.column }) }); renderTable(result.data); setStatus('Imaginea a fost adăugată în celula selectată.', 'success'); } catch (error) { setStatus(error.message, 'error'); } }; reader.readAsDataURL(file); }
 function csvRows(text) { return text.replace(/^\uFEFF/, '').trim().split(/\r?\n/).filter(Boolean).map((line) => line.match(/("(?:[^"]|"")*"|[^,]*)(,|$)/g).map((part) => part.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"'))); }
 function importCsv(file) { const reader = new FileReader(); reader.onload = () => { const parsed = csvRows(reader.result); if (!parsed.length) return setStatus('Fișierul CSV este gol.', 'error'); renderTable(parsed, false); markDirty(); setStatus('CSV importat local. Apasă Salvează pentru confirmare.', 'success'); }; reader.readAsText(file); }
-function exportCsv() { const values = collectRows().map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n'); const url = URL.createObjectURL(new Blob([`\uFEFF${values}`], { type: 'text/csv;charset=utf-8' })); const link = Object.assign(document.createElement('a'), { href: url, download: `${sheetSelect.value || 'sheet'}.csv` }); link.click(); URL.revokeObjectURL(url); }
+function exportCsv() {
+  const rows = collectRows();
+  if (!rows.length) return setStatus('Foaia nu conține date pentru export.', 'error');
+  const values = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\uFEFF${values}`], { type: 'text/csv;charset=utf-8' }));
+  const link = Object.assign(document.createElement('a'), { href: url, download: `${sheetSelect.value || 'sheet'}.csv` });
+  link.click();
+  URL.revokeObjectURL(url);
+  closeExportMenu();
+  setStatus('Fișierul CSV a fost descărcat.', 'success');
+}
+
+function exportJson() {
+  const rows = collectRows();
+  if (!rows.length) return setStatus('Foaia nu conține date pentru export.', 'error');
+  const headers = rows[0].map((h, i) => h.trim() || `Coloana_${i + 1}`);
+  const dataRows = rows.slice(1);
+  const exportData = dataRows.map((row) => {
+    const obj = {};
+    headers.forEach((header, idx) => {
+      const val = row[idx] ?? '';
+      const num = parseNumericValue(val);
+      obj[header] = num !== null ? num : val;
+    });
+    return obj;
+  });
+  const jsonString = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement('a'), {
+    href: url,
+    download: `${sheetSelect.value || 'sheet'}.json`
+  });
+  link.click();
+  URL.revokeObjectURL(url);
+  closeExportMenu();
+  setStatus('Fișierul JSON a fost descărcat.', 'success');
+}
+
+async function exportExcel() {
+  const rows = collectRows();
+  if (!rows.length) return setStatus('Foaia nu conține date pentru export.', 'error');
+  closeExportMenu();
+  setStatus('Se generează fișierul Excel (.xlsx)…');
+  try {
+    const title = sheetSelect.value || 'sheet';
+    const response = await fetch('/api/export/xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, data: rows })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || 'Generarea fișierului Excel a eșuat.');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = Object.assign(document.createElement('a'), {
+      href: url,
+      download: `${title}.xlsx`
+    });
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus('Fișierul Excel (.xlsx) a fost descărcat.', 'success');
+  } catch (error) {
+    setStatus(error.message, 'error');
+  }
+}
+
+function toggleExportMenu() {
+  const menu = $('#export-menu');
+  if (menu) menu.hidden = !menu.hidden;
+}
+
+function closeExportMenu() {
+  const menu = $('#export-menu');
+  if (menu) menu.hidden = true;
+}
+
 function findNext() { const term = $('#find-input').value.trim().toLocaleLowerCase(); document.querySelectorAll('.search-hit').forEach((cell) => cell.classList.remove('search-hit')); if (!term) return; searchMatches = [...table.querySelectorAll('.data-cell')].filter((cell) => (cell.dataset.formula || cell.textContent).toLocaleLowerCase().includes(term)); if (!searchMatches.length) return setStatus('Niciun rezultat în foaia activă.', 'error'); searchMatches.forEach((cell) => cell.classList.add('search-hit')); searchIndex = (searchIndex + 1) % searchMatches.length; const cell = searchMatches[searchIndex]; setActive(Number(cell.dataset.row), Number(cell.dataset.column)); cell.focus(); cell.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' }); setStatus(`${searchMatches.length} rezultate găsite.`, 'success'); }
 function toggleTheme() { const dark = document.body.classList.toggle('dark-mode'); localStorage.setItem('sheetly-theme', dark ? 'dark' : 'light'); $('#theme-button').textContent = dark ? '☀' : '◐'; }
 
-loadButton.addEventListener('click', loadDocument); urlInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') loadDocument(); }); saveButton.addEventListener('click', saveDocument); $('#reset-button').addEventListener('click', resetDocument); sheetSelect.addEventListener('change', selectSheet); $('#rename-sheet-button').addEventListener('click', renameSheet); $('#new-sheet-button').addEventListener('click', createSheet); $('#delete-sheet-button').addEventListener('click', deleteSheet); $('#add-row-button').addEventListener('click', addRow); $('#delete-row-button').addEventListener('click', deleteRow); $('#add-column-button').addEventListener('click', addColumn); $('#delete-column-button').addEventListener('click', deleteColumn); $('#undo-button').addEventListener('click', undo); $('#redo-button').addEventListener('click', redo); $('#table-tool-button').addEventListener('click', () => showTool('table')); $('#diagram-tool-button').addEventListener('click', () => showTool('diagram')); $('#image-button').addEventListener('click', () => imageInput.click()); document.querySelectorAll('[data-close-tools]').forEach((button) => button.addEventListener('click', closeTools)); $('#insert-table-button').addEventListener('click', insertTable); $('#insert-diagram-button').addEventListener('click', insertDiagram); imageInput.addEventListener('change', () => { if (imageInput.files[0]) uploadImage(imageInput.files[0]); imageInput.value = ''; }); $('#import-button').addEventListener('click', () => importInput.click()); importInput.addEventListener('change', () => { if (importInput.files[0]) importCsv(importInput.files[0]); importInput.value = ''; }); $('#export-button').addEventListener('click', exportCsv); $('#find-next-button').addEventListener('click', findNext); $('#find-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') findNext(); }); $('#theme-button').addEventListener('click', toggleTheme);
+loadButton.addEventListener('click', loadDocument); urlInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') loadDocument(); }); saveButton.addEventListener('click', saveDocument); $('#reset-button').addEventListener('click', resetDocument); sheetSelect.addEventListener('change', selectSheet); $('#rename-sheet-button').addEventListener('click', renameSheet); $('#new-sheet-button').addEventListener('click', createSheet); $('#delete-sheet-button').addEventListener('click', deleteSheet); $('#add-row-button').addEventListener('click', addRow); $('#delete-row-button').addEventListener('click', deleteRow); $('#add-column-button').addEventListener('click', addColumn); $('#delete-column-button').addEventListener('click', deleteColumn); $('#undo-button').addEventListener('click', undo); $('#redo-button').addEventListener('click', redo); $('#sort-asc-button')?.addEventListener('click', () => { const col = active.column ?? 0; if (!preSortSnapshot || currentSort.column !== col) preSortSnapshot = clone(collectRows()); applySort(col, 'asc'); }); $('#sort-desc-button')?.addEventListener('click', () => { const col = active.column ?? 0; if (!preSortSnapshot || currentSort.column !== col) preSortSnapshot = clone(collectRows()); applySort(col, 'desc'); }); $('#table-tool-button').addEventListener('click', () => showTool('table')); $('#diagram-tool-button').addEventListener('click', () => showTool('diagram')); $('#image-button').addEventListener('click', () => imageInput.click()); document.querySelectorAll('[data-close-tools]').forEach((button) => button.addEventListener('click', closeTools)); $('#insert-table-button').addEventListener('click', insertTable); $('#insert-diagram-button').addEventListener('click', insertDiagram); imageInput.addEventListener('change', () => { if (imageInput.files[0]) uploadImage(imageInput.files[0]); imageInput.value = ''; }); $('#import-button').addEventListener('click', () => importInput.click()); importInput.addEventListener('change', () => { if (importInput.files[0]) importCsv(importInput.files[0]); importInput.value = ''; }); $('#export-dropdown-button')?.addEventListener('click', (e) => { e.stopPropagation(); toggleExportMenu(); }); $('#export-csv-button')?.addEventListener('click', exportCsv); $('#export-xlsx-button')?.addEventListener('click', exportExcel); $('#export-json-button')?.addEventListener('click', exportJson); document.addEventListener('click', (e) => { if (!e.target.closest('.export-dropdown-wrapper')) closeExportMenu(); }); $('#find-next-button').addEventListener('click', findNext); $('#find-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') findNext(); }); $('#theme-button').addEventListener('click', toggleTheme);
 $('#filter-toggle-button').addEventListener('click', toggleFilterSidebar);
 $('#close-filter-button').addEventListener('click', closeFilterSidebar);
 $('#reset-filters-button').addEventListener('click', resetAllFilters);

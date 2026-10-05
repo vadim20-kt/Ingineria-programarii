@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 import io
 import mimetypes
@@ -167,6 +168,17 @@ def reauth():
     if TOKEN_PATH.exists():
         TOKEN_PATH.unlink()
     return redirect(url_for("login"))
+
+
+@app.get("/logout")
+def logout():
+    if TOKEN_PATH.exists():
+        try:
+            TOKEN_PATH.unlink()
+        except OSError:
+            pass
+    session.clear()
+    return redirect(url_for("index"))
 
 
 @app.get("/oauth2callback")
@@ -569,6 +581,89 @@ def save_data():
         return jsonify(ok=True, data=read_sheet(service, document_id, sheet_title))
     except KeyError:
         return jsonify(error="Niciun document încărcat."), 400
+    except Exception as error:
+        return api_error(error)
+
+
+@app.post("/api/export/xlsx")
+def export_xlsx():
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        payload = request.json or {}
+        data = payload.get("data", [])
+        if not data:
+            raise ValueError("Foaia nu conține date pentru export.")
+
+        sheet_title = payload.get("title", "Foaie") or "Foaie"
+        clean_title = re.sub(r'[\\/*?:\[\]]', '_', str(sheet_title))[:31] or "Sheet1"
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = clean_title
+
+        header_fill = PatternFill(start_color="176B4A", end_color="176B4A", fill_type="solid")
+        header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+        body_font = Font(name="Segoe UI", size=10)
+        thin_border = Border(
+            left=Side(style='thin', color='D0D7D0'),
+            right=Side(style='thin', color='D0D7D0'),
+            top=Side(style='thin', color='D0D7D0'),
+            bottom=Side(style='thin', color='D0D7D0')
+        )
+
+        for r_idx, row in enumerate(data, 1):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws.cell(row=r_idx, column=c_idx)
+                val_str = str(val).strip() if val is not None else ""
+
+                num = None
+                if val_str and not val_str.startswith("="):
+                    try:
+                        if "." in val_str:
+                            num = float(val_str)
+                        else:
+                            num = int(val_str)
+                    except ValueError:
+                        num = None
+
+                if num is not None:
+                    cell.value = num
+                elif val_str.startswith("="):
+                    cell.value = val_str
+                else:
+                    cell.value = val_str
+
+                if r_idx == 1:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                else:
+                    cell.font = body_font
+                    cell.border = thin_border
+                    if num is not None:
+                        cell.alignment = Alignment(horizontal="right")
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_text = str(cell.value or "")
+                if len(val_text) > max_len:
+                    max_len = len(val_text)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+        return send_file(
+            stream,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=f"{clean_title}.xlsx"
+        )
     except Exception as error:
         return api_error(error)
 

@@ -12,10 +12,12 @@ Sheetly este o aplicație web construită în Python cu Flask, destinată lucrul
 - creare și ștergere de foi;
 - salvare manuală prin butonul Save sau tastatura Ctrl+S;
 - import CSV din fișier local;
-- export al foii active în format CSV;
+- export al foii active în formate multiple: Excel (.xlsx), CSV (.csv) și JSON (.json);
 - inserare rapidă de tabele și scheme de proces;
 - încărcare imagini în Drive și inserare în celula selectată prin formula `IMAGE()`;
-- reîncărcare manuală din Google Sheets pentru a vedea modificările făcute de alți colaboratori.
+- reîncărcare manuală din Google Sheets pentru a vedea modificările făcute de alți colaboratori;
+- sortare pe coloane crescător / descrescător (A→Z, Z→A, numeric, date calendaristice);
+- deconectare / delogare cont Google din interfață.
 
 ## Project structure
 
